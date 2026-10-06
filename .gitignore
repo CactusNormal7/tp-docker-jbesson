@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+npm-debug.log*
+
+# Java / Maven
+target/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
