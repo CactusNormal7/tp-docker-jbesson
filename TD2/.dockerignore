@@ -1,0 +1,19 @@
+# Secrets : ne doivent jamais finir dans une couche d'image
+.env
+.env.*
+
+# Dépendances : réinstallées dans l'image par npm ci (versions Linux, propres)
+node_modules
+
+# Artefacts de build : recompilés dans l'image par npm run build
+dist
+
+# Inutile à l'exécution / au build
+.git
+.gitignore
+.DS_Store
+*.md
+Dockerfile*
+.dockerignore
+java
+npm-debug.log*
