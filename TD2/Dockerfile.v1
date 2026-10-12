@@ -1,4 +1,3 @@
-# v1 — version naïve : image complète, on copie tout, on construit, on lance
 FROM node:24
 WORKDIR /app
 COPY . .

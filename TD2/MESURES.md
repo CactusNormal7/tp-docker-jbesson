@@ -1,172 +1,105 @@
-# TD2 — Mesures et réponses
+# TD2 - Mesures et réponses
 
-Stack choisie : **Node 24 + TypeScript + Express** (port 3000).
+Stack : Node (TypeScript + Express, port 3000).
 
-## Tableau de mesures
-
-| Version | Taille de l'image | Build à froid | Rebuild après modif d'**une ligne** de code | `.env` dans l'image ? | Utilisateur |
+| Version | Taille | Build à froid | Rebuild (1 ligne modifiée) | .env dans l'image ? | Utilisateur |
 |---|---|---|---|---|---|
-| v1 — naïve | 1.24 GB | 2.4 s | 2.1 s | **oui** | root (uid 0) |
-| v2 — cache | 1.24 GB | 2.6 s | 1.2 s | **oui** | root (uid 0) |
-| v3 — `.dockerignore` | 1.18 GB | 2.3 s | 0.9 s | non | root (uid 0) |
-| v4 — multi-stage | **170 MB** | 2.9 s | 0.9 s | non | **node (uid 1000)** |
+| v1 | 1.24GB | 2.7s | 1.7s | oui | root |
+| v2 | 1.24GB | 1.7s | 1.0s | oui | root |
+| v3 | 1.18GB | 1.5s | 0.7s | non | root |
+| v4 | 170MB | 2.8s | 0.9s | non | node |
 
-Conditions : Docker 29.4, images de base déjà téléchargées, connexion rapide (le `npm ci` ne prend que ~2 s,
-d'où des temps de build courts). La modif d'une ligne = changer le message par défaut dans `src/server.ts`.
-
-Commandes utilisées pour chaque version :
+Commandes :
 
 ```bash
-docker build --no-cache -f Dockerfile.v1 -t td2:v1 .   # build à froid
-# modifier une ligne de src/server.ts, puis :
-docker build -f Dockerfile.v1 -t td2:v1 .              # rebuild
-docker image ls td2                                    # tailles
-docker run --rm td2:v1 ls -la                          # fichiers présents dans /app (.env ?)
-docker run --rm td2:v1 id                              # utilisateur
-docker run --rm -p 3000:3000 td2:v1                    # puis : curl localhost:3000/
+time docker build --no-cache -t td2:v1 .
+time docker build -t td2:v1 .
+docker image ls td2
+docker run --rm td2:v1 ls -la
+docker run --rm td2:v1 id
 ```
 
-(v2 et v3 ont été construites avec des Dockerfiles intermédiaires ; seuls `Dockerfile.v1` et `Dockerfile` (v4) sont
-rendus.)
+Le rebuild est mesuré après modification du message par défaut dans src/server.ts.
 
----
-
-## Étape 1 — Version naïve (`Dockerfile.v1`)
-
-```dockerfile
-FROM node:24
-WORKDIR /app
-COPY . .
-RUN npm ci && npm run build
-EXPOSE 3000
-CMD ["node", "dist/server.js"]
-```
+## Étape 1
 
 ```bash
-$ curl localhost:3000/
-{"message":"Hello Docker","version":"dev","hostname":"adc45249886a"}
+docker run -d -p 3000:3000 td2:v1
+curl localhost:3000/
 ```
 
-**Q1. Le `.env` est-il dans l'image ? Pourquoi est-ce grave ?**
-
-Oui : `COPY . .` copie tout le dossier, y compris `.env` (visible avec `docker run --rm td2:v1 ls -la`).
-C'est grave même en local car :
-- une image est faite de **couches lisibles par n'importe qui qui possède l'image** (`docker save`, `docker history`,
-  `docker run … cat .env`) : le secret est en clair dedans ;
-- l'image est faite pour **circuler** : un `docker push` vers un registre (Docker Hub, GitHub, CI…) et la clé fuite,
-  potentiellement publiquement ;
-- même supprimé dans une couche suivante (`RUN rm .env`), le fichier **reste dans la couche précédente** ;
-- la clé doit alors être considérée comme compromise et **révoquée**.
-
-Les secrets se passent à l'exécution (`-e`, `--env-file`, secrets Docker/Kubernetes), jamais au build.
-
-## Étape 2 — Le cache
-
-```dockerfile
-FROM node:24
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-EXPOSE 3000
-CMD ["node", "dist/server.js"]
+```
+{"message":"Hello Docker","version":"dev","hostname":"2607465443ac"}
 ```
 
-**Q2. Pourquoi le rebuild est-il plus rapide ? Que se passe-t-il si on modifie `package.json` ?**
+### Q1
 
-Docker réutilise une couche du cache tant que l'instruction **et les fichiers qu'elle copie** n'ont pas changé ;
-dès qu'une couche est invalidée, **toutes les suivantes** sont reconstruites.
-- En v1, `COPY . .` est avant `npm ci` : modifier une ligne de code invalide la copie, donc `npm ci` est refait.
-- En v2, on copie d'abord **uniquement** `package.json` / `package-lock.json` : tant qu'ils ne changent pas, la couche
-  `npm ci` vient du cache (`CACHED`), seuls `COPY . .` et `npm run build` sont rejoués (2.1 s → 1.2 s ; l'écart serait
-  bien plus grand avec beaucoup de dépendances ou un réseau lent).
-
-Si on modifie `package.json` (ou le lock), la couche `COPY package*.json` est invalidée, donc `npm ci` et tout ce qui
-suit sont refaits — ce qui est voulu, puisque les dépendances ont changé.
-
-## Étape 3 — `.dockerignore`
+Le .env est dans l'image :
 
 ```
-.env
-.env.*
-node_modules
-dist
-.git
-.gitignore
-.DS_Store
-*.md
-Dockerfile*
-.dockerignore
-java
-npm-debug.log*
+$ docker run --rm td2:v1 cat .env
+API_KEY=sk-live-ne-doit-jamais-finir-dans-une-image
 ```
 
-**Q3. Qu'avez-vous exclu, et pourquoi ? Qu'a changé `transferring context` ?**
+`COPY . .` copie tout le dossier. Toute personne ayant l'image peut lire la clé, et un push sur un registry la rend accessible.
 
-| Ligne | Pourquoi |
-|---|---|
-| `.env`, `.env.*` | secrets : ne doivent jamais entrer dans une image (cf. Q1) |
-| `node_modules` | réinstallé par `npm ci` dans l'image ; la copie locale (59 Mo, compilée pour macOS) écrasait celle de l'image au `COPY . .` |
-| `dist` | artefact de build, recompilé dans l'image ; une version locale périmée pourrait s'y glisser |
-| `.git`, `.gitignore` | historique et config git, inutiles et parfois sensibles |
-| `.DS_Store`, `npm-debug.log*` | fichiers parasites du système / logs |
-| `*.md`, `Dockerfile*`, `.dockerignore` | docs et fichiers de build, inutiles à l'exécution ; modifier le README ne casse plus le cache |
-| `java` | l'autre version de l'app, non utilisée |
+## Étape 2
 
-`transferring context` : **57.66 MB → 161 B**. Le client Docker n'envoie plus `node_modules`, `dist`, `.env`… au
-démon : le build démarre plus vite, l'image ne contient plus que le nécessaire (1.24 GB → 1.18 GB) et le `.env` n'y est
-plus.
+### Q2
 
-## Étape 4 — Multi-stage (`Dockerfile`, image `td2:v4`)
+package.json et package-lock.json sont copiés en premier, puis `npm ci`, puis le reste du code. Une modification du code ne touche pas la couche npm ci, qui reste en cache :
 
-```dockerfile
-FROM node:24.21.0-alpine3.24 AS build
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
-COPY tsconfig.json ./
-COPY src ./src
-RUN npm run build
-
-FROM node:24.21.0-alpine3.24
-ENV NODE_ENV=production
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-COPY --from=build /app/dist ./dist
-USER node
-EXPOSE 3000
-CMD ["node", "dist/server.js"]
+```
+#8 [4/6] RUN npm ci
+#8 CACHED
 ```
 
-Résultat : **170 MB** (contre 1.24 GB), utilisateur `node` (uid 1000), versions de base épinglées.
+En v1, `RUN npm ci && npm run build` est refait à chaque modification.
+Si package.json change, le cache est invalidé à partir de cette ligne et npm ci est refait.
 
-**Q4. Qu'est-ce qui est dans l'image de build et n'est plus dans l'image finale ?**
+## Étape 3
 
-- le **compilateur TypeScript** (`typescript`) et les **devDependencies** (`@types/express`, `@types/node`) ;
-- les **sources TypeScript** (`src/`) et `tsconfig.json` — seul `dist/` (le JS compilé) est copié ;
-- le **cache npm** ;
-- la base **Debian complète** de `node:24` (compilateurs gcc/make, python, git, curl… ~1 Go) remplacée par Alpine ;
-- et l'app ne tourne plus en **root** mais en `node`.
+### Q3
 
-## Étape 5 — Une image, plusieurs configurations
+Exclus :
+- .env, .env.* : secrets
+- node_modules : réinstallé dans l'image par npm ci
+- dist : recompilé dans l'image
+- .git, .gitignore : historique et config git, inutiles dans l'image
+- *.md, Dockerfile*, .dockerignore : documentation et fichiers de build, inutiles à l'exécution
+- .DS_Store, npm-debug.log* : fichiers système et logs
+- java : autre version de l'API
+
+transferring context :
+- sans .dockerignore (v1) : 57.66MB
+- avec .dockerignore (v3) : 814B
+
+node_modules et les autres fichiers exclus ne sont plus envoyés au build.
+
+## Étape 4
+
+### Q4
+
+Absents de l'image finale :
+- le compilateur TypeScript
+- les devDependencies (@types/node, @types/express)
+- les sources src/ et tsconfig.json (seul dist/ est copié)
+- le cache npm
+
+## Étape 5
 
 ```bash
 docker run -d --name td2-a -p 3001:3000 -e MESSAGE="Bonjour depuis A" -e APP_VERSION=1.0.0 td2:v4
 docker run -d --name td2-b -p 3002:3000 -e MESSAGE="Bonjour depuis B" -e APP_VERSION=1.0.0 td2:v4
-
-$ curl localhost:3001/
-{"message":"Bonjour depuis A","version":"1.0.0","hostname":"4543dd744be1"}
-$ curl localhost:3002/
-{"message":"Bonjour depuis B","version":"1.0.0","hostname":"071b1df371ec"}
 ```
 
-**Q5. Pourquoi ne pas reconstruire l'image pour changer le message ?**
+```
+$ curl localhost:3001/
+{"message":"Bonjour depuis A","version":"1.0.0","hostname":"bbab8dfaed35"}
+$ curl localhost:3002/
+{"message":"Bonjour depuis B","version":"1.0.0","hostname":"580ac65637ec"}
+```
 
-- **Build once, run anywhere** : c'est la même image (même digest) qui est testée puis déployée en recette et en
-  prod. Reconstruire produirait une image différente, non testée (dépendances qui bougent, etc.).
-- La **configuration dépend de l'environnement**, pas du code (principe *12-factor* : config dans l'environnement).
-  Une seule image sert N environnements / N instances.
-- C'est **instantané** : changer une variable = redémarrer un conteneur, pas relancer un build et un push.
-- Les **secrets** restent hors de l'image (cf. Q1).
+### Q5
+
+La même image doit tourner dans tous les environnements (test, prod). Reconstruire pour changer la config produit une nouvelle image non testée. La config dépend de l'environnement, elle se passe au lancement.

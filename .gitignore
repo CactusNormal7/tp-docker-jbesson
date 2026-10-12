@@ -21,3 +21,6 @@ target/
 
 # Logs
 *.log
+
+# Documentation locale
+doc/
